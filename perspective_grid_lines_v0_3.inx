@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<inkscape-extension xmlns="http://www.inkscape.org/namespace/inkscape/extension">
+    <name>PerspectiveGrid — Perspective Rays &amp; Grid</name>
+    <id>org.inkscape.perspectivegrid.rays_v0_3</id>
+
+    <param name="rays_header" type="description" appearance="header">Vanishing rays</param>
+    <param name="show_rays" type="bool" gui-text="Show vanishing rays">true</param>
+    <param name="ray_count" type="int" min="1" max="50"
+           gui-text="Rays per vanishing point:">3</param>
+
+    <param name="grid_header" type="description" appearance="header">Grid</param>
+    <param name="show_grid" type="bool" gui-text="Draw grid">false</param>
+    <param name="grid_x" type="int" min="1" max="50"
+           gui-text="Segments along X (width):">4</param>
+    <param name="grid_y" type="int" min="1" max="50"
+           gui-text="Segments along Y (depth):">4</param>
+
+    <param name="floor_header" type="description" appearance="header">Floor grid options</param>
+    <param name="show_within_perspective" type="bool" gui-text="Within the lines of perspective">true</param>
+
+    <param name="bounded_header" type="description" appearance="header">Bounded surfaces</param>
+    <param name="show_floor" type="bool" gui-text="Floor">false</param>
+    <param name="show_ceiling" type="bool" gui-text="Ceiling">false</param>
+    <param name="show_left_wall" type="bool" gui-text="Left wall">false</param>
+    <param name="show_right_wall" type="bool" gui-text="Right wall">false</param>
+    <param name="show_front_wall" type="bool" gui-text="Front wall (near)">false</param>
+    <param name="show_back_wall" type="bool" gui-text="Back wall (far)">false</param>
+
+    <effect needs-live-preview="false">
+        <object-type>all</object-type>
+        <effects-menu>
+            <submenu name="Custom"/>
+        </effects-menu>
+    </effect>
+    <script>
+        <command location="inx" interpreter="python">perspective_grid_lines_v0_3.py</command>
+    </script>
+</inkscape-extension>
