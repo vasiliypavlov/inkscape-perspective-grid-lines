@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<inkscape-extension xmlns="http://www.inkscape.org/namespace/inkscape/extension">
+    <name>PerspectiveGrid — Perspective Rays</name>
+    <id>org.inkscape.perspectivegrid.rays_v0_3</id>
+
+    <param name="rays_header" type="description" appearance="header">Построение перспективных линий</param>
+    <param name="show_rays" type="bool" gui-text="Лучи схождения">true</param>
+    <param name="ray_count" type="int" min="1" max="50"
+           gui-text="Количество лучей от каждой точки схода:">3</param>
+
+    <effect needs-live-preview="false">
+        <object-type>all</object-type>
+        <effects-menu>
+            <submenu name="Custom"/>
+        </effects-menu>
+    </effect>
+    <script>
+        <command location="inx" interpreter="python">perspective_grid_lines_v0_3.py</command>
+    </script>
+</inkscape-extension>
