@@ -8,12 +8,18 @@
     <param name="ray_count" type="int" min="1" max="50"
            gui-text="Rays per vanishing point:">3</param>
 
-    <param name="grid_header" type="description" appearance="header">Grid</param>
+    <param name="grid_header" type="description" appearance="header">Grid (rays)</param>
     <param name="show_grid" type="bool" gui-text="Draw grid">false</param>
     <param name="grid_x" type="int" min="1" max="50"
-           gui-text="Segments along X (width):">4</param>
+           gui-text="Ray grid — segments along X (width):">10</param>
     <param name="grid_y" type="int" min="1" max="50"
-           gui-text="Segments along Y (depth):">4</param>
+           gui-text="Ray grid — segments along Y (depth):">10</param>
+
+    <param name="box_header" type="description" appearance="header">Box (floor / walls / ceiling)</param>
+    <param name="box_x" type="int" min="1" max="50"
+           gui-text="Box grid — segments along X (width):">3</param>
+    <param name="box_y" type="int" min="1" max="50"
+           gui-text="Box grid — segments along Y (depth):">3</param>
 
     <param name="floor_header" type="description" appearance="header">Floor grid options</param>
     <param name="show_within_perspective" type="bool" gui-text="Within the lines of perspective">true</param>

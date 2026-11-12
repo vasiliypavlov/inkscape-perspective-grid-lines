@@ -18,7 +18,14 @@ def cross2(a, b):
 def distance(p1, p2):
     return math.hypot(p2[0] - p1[0], p2[1] - p1[1])
 
-
+def point_line_distance(p, a, b):
+    """Кратчайшее расстояние от точки p до прямой (a, b)."""
+    dx, dy = b[0] - a[0], b[1] - a[1]
+    length = math.hypot(dx, dy)
+    if length < EPSILON:
+        return math.hypot(p[0] - a[0], p[1] - a[1])
+    return abs(dy * p[0] - dx * p[1] + b[0] * a[1] - b[1] * a[0]) / length
+    
 def intersect_lines(p1, p2, p3, p4):
     r = (p2[0] - p1[0], p2[1] - p1[1])
     s = (p4[0] - p3[0], p4[1] - p3[1])
@@ -86,13 +93,31 @@ def project_point(H, u, v):
 
 
 class PerspectiveGrid(inkex.EffectExtension):
-
+    
+    def _get_active_page_bbox(self):
+        """Возвращает BoundingBox активной страницы (той, где центр вида) или None."""
+        try:
+            center = self.svg.namedview.center
+            pages = self.svg.namedview.get_pages()
+            for idx, page in enumerate(pages):
+                bbox = self.svg.get_page_bbox(idx)
+                if (bbox.left <= center[0] <= bbox.right and
+                        bbox.top <= center[1] <= bbox.bottom):
+                    return bbox
+        except Exception:
+            pass
+        return None
+            
     def add_arguments(self, pars):
         pars.add_argument("--show_rays", type=inkex.Boolean, default=True)
         pars.add_argument("--ray_count", type=int, default=3)
         pars.add_argument("--show_grid", type=inkex.Boolean, default=False)
         pars.add_argument("--grid_x", type=int, default=4)
         pars.add_argument("--grid_y", type=int, default=4)
+
+        # NEW: box uses its own segment counts
+        pars.add_argument("--box_x", type=int, default=4)
+        pars.add_argument("--box_y", type=int, default=4)
 
         pars.add_argument("--show_within_perspective", type=inkex.Boolean, default=True)
         pars.add_argument("--show_to_page_edge", type=inkex.Boolean, default=False)
@@ -167,9 +192,9 @@ class PerspectiveGrid(inkex.EffectExtension):
     def _analyze_mode_3(self, objects):
         left, right, third = self._get_three_vp_markers(objects)
         vps = {
-            "VP1": {"center": left["center"], "color": left["color"]},
-            "VP2": {"center": right["center"], "color": right["color"]},
-            "VP3": {"center": third["center"], "color": third["color"]},
+            "VP1": {"center": left["center"], "color": left["color"], "elem": left["elem"]},
+            "VP2": {"center": right["center"], "color": right["color"], "elem": right["elem"]},
+            "VP3": {"center": third["center"], "color": third["color"], "elem": third["elem"]},
         }
         return vps, None, 'mode3'
 
@@ -187,9 +212,9 @@ class PerspectiveGrid(inkex.EffectExtension):
         left, right, third = self._get_three_vp_markers(unique_objs)
 
         vps = {
-            "VP1": {"center": left["center"], "color": left["color"]},
-            "VP2": {"center": right["center"], "color": right["color"]},
-            "VP3": {"center": third["center"], "color": third["color"]},
+            "VP1": {"center": left["center"], "color": left["color"], "elem": left["elem"]},
+            "VP2": {"center": right["center"], "color": right["color"], "elem": right["elem"]},
+            "VP3": {"center": third["center"], "color": third["color"], "elem": third["elem"]},
         }
         lim = pair_groups[0]
         bounds = (lim[0]["center"], lim[1]["center"], None, None)
@@ -209,9 +234,9 @@ class PerspectiveGrid(inkex.EffectExtension):
         left, right, third = self._get_three_vp_markers(unique_objs)
 
         vps = {
-            "VP1": {"center": left["center"], "color": left["color"]},
-            "VP2": {"center": right["center"], "color": right["color"]},
-            "VP3": {"center": third["center"], "color": third["color"]},
+            "VP1": {"center": left["center"], "color": left["color"], "elem": left["elem"]},
+            "VP2": {"center": right["center"], "color": right["color"], "elem": right["elem"]},
+            "VP3": {"center": third["center"], "color": third["color"], "elem": third["elem"]},
         }
 
         h_group = next(
@@ -313,9 +338,9 @@ class PerspectiveGrid(inkex.EffectExtension):
             raise inkex.AbortExtension("Reverse: could not compute VP3.")
 
         vps = {
-            "VP1": {"center": vp_left, "color": u_left["color"]},
-            "VP2": {"center": vp_right, "color": u_right["color"]},
-            "VP3": {"center": best_vp3, "color": u_mid["color"]},
+            "VP1": {"center": vp_left, "color": u_left["color"], "elem": u_left["elem"]},
+            "VP2": {"center": vp_right, "color": u_right["color"], "elem": u_right["elem"]},
+            "VP3": {"center": best_vp3, "color": u_mid["color"], "elem": u_mid["elem"]},
         }
         bounds = (four_pts + u_pts, u_pts, four_pts)
         return vps, bounds, 'mode7_reverse'
@@ -388,10 +413,47 @@ class PerspectiveGrid(inkex.EffectExtension):
             return [start + delta / 2.0]
         return [start + delta * i / (count - 1) for i in range(count)]
 
+    def _get_ray_style(self, vp):
+        """
+        Собирает стиль луча из маркера VP.
+        - stroke: цвет маркера (stroke или fill)
+        - stroke-width: из маркера, если задан; иначе 1
+        - stroke-dasharray: из маркера, если задан
+        - opacity: из маркера, если задан; иначе 0.6
+        """
+        color = vp.get("color", "#000000")
+        elem = vp.get("elem")
+
+        sw = "1"
+        dash = None
+        op = "0.6"
+
+        if elem is not None:
+            try:
+                s = elem.style
+                v = s.get("stroke-width")
+                if v and v not in ("none", ""):
+                    sw = v
+                v = s.get("stroke-dasharray")
+                if v and v not in ("none", ""):
+                    dash = v
+                v = s.get("opacity")
+                if v and v not in ("", None):
+                    op = v
+            except Exception:
+                pass
+
+        parts = ["fill:none", f"stroke:{color}", f"stroke-width:{sw}"]
+        if dash:
+            parts.append(f"stroke-dasharray:{dash}")
+        parts.append(f"opacity:{op}")
+        return ";".join(parts) + ";"
+
     def _draw_mode7_reverse(self, g_rays, vps, bounds, count, rect):
         all_target_pts, u_pts, four_pts = bounds
         vp1, vp2, vp3 = vps["VP1"], vps["VP2"], vps["VP3"]
 
+        # 1. Линия горизонта
         ox1, oy1 = vp1["center"]
         ox2, oy2 = vp2["center"]
         h_dx, h_dy = ox2 - ox1, oy2 - oy1
@@ -404,10 +466,11 @@ class PerspectiveGrid(inkex.EffectExtension):
                 hx1, hy1 = ox1 - h_dx * t_bwd, oy1 - h_dy * t_bwd
                 hx2, hy2 = ox1 + h_dx * t_fwd, oy1 + h_dy * t_fwd
                 h_path = inkex.PathElement(d=f"M {hx1:.4f},{hy1:.4f} L {hx2:.4f},{hy2:.4f}")
-                h_path.set("style", "fill:none;stroke:#888888;stroke-width:1;opacity:0.7;")
+                h_path.set("style", "fill:none;stroke:#888888;stroke-width:0;opacity:0.7;")
                 h_path.set("id", "Horizon_Line")
                 h_group.add(h_path)
 
+        # 2. Маркеры точек схода
         markers = inkex.Group(id="Vanishing_Points_Markers")
         g_rays.add(markers)
         for vp_key in ("VP1", "VP2", "VP3"):
@@ -421,6 +484,7 @@ class PerspectiveGrid(inkex.EffectExtension):
             dot.set("id", f"Marker_{vp_key}")
             markers.add(dot)
 
+        # 3. Лучи к 4 точкам пола (нижняя группа)
         def draw_floor_rays(vp_key):
             vp = vps[vp_key]
             ox, oy = vp["center"]
@@ -436,21 +500,32 @@ class PerspectiveGrid(inkex.EffectExtension):
                     continue
                 ex, ey = ox + dx * t, oy + dy * t
                 path = inkex.PathElement(d=f"M {ox:.4f},{oy:.4f} L {ex:.4f},{ey:.4f}")
-                path.set("style", f"fill:none;stroke:{vp['color']};stroke-width:1.5;opacity:0.85;")
+                path.set("style", self._get_ray_style(vp))
                 path.set("id", f"Floor_Rays_{vp_key}_{index}")
                 group.add(path)
 
-        def draw_ceiling_rays(vp_key):
+        # 4. Лучи к 3 уникальным точкам (верхняя группа)
+        def draw_ceiling_rays(vp_key, skip_angles=None):
             vp = vps[vp_key]
             ox, oy = vp["center"]
             group = inkex.Group(id=f"Ceiling_Rays_{vp_key}")
             group.set("label", f"Ceiling — {vp_key}")
             g_rays.add(group)
+
             angles = [self._angle_between((ox, oy), pt) for pt in u_pts]
+            
+            # Дедупликация по углу (если луч совпадает с половым, не рисуем его)
             unique_angles = []
             for a in sorted(angles):
-                if not unique_angles or abs((a - unique_angles[-1] + 180.0) % 360.0 - 180.0) > 0.5:
-                    unique_angles.append(a)
+                # 1. Пропускаем дубликаты между самими уникальными точками
+                if unique_angles and abs((a - unique_angles[-1] + 180.0) % 360.0 - 180.0) <= 0.5:
+                    continue
+                # 2. Пропускаем, если угол совпадает с уже нарисованными половыми лучами
+                if skip_angles:
+                    if any(abs((a - sa + 180.0) % 360.0 - 180.0) <= 1.0 for sa in skip_angles):
+                        continue
+                unique_angles.append(a)
+
             for index, angle in enumerate(unique_angles, 1):
                 rad = math.radians(angle)
                 dx, dy = math.cos(rad), math.sin(rad)
@@ -459,13 +534,21 @@ class PerspectiveGrid(inkex.EffectExtension):
                     continue
                 ex, ey = ox + dx * t, oy + dy * t
                 path = inkex.PathElement(d=f"M {ox:.4f},{oy:.4f} L {ex:.4f},{ey:.4f}")
-                path.set("style", f"fill:none;stroke:{vp['color']};stroke-width:1.5;opacity:0.85;")
+                path.set("style", self._get_ray_style(vp))
                 path.set("id", f"Ceiling_Rays_{vp_key}_{index}")
                 group.add(path)
 
-        for vp_key in ("VP1", "VP2", "VP3"):
+        # Вызовы с передачей углов пола для дедупликации у VP3
+        for vp_key in ("VP1", "VP2"):
             draw_floor_rays(vp_key)
             draw_ceiling_rays(vp_key)
+
+        # Для VP3 считаем углы пола и передаем их в потолочный веер для фильтрации
+        vp3_pt = vps["VP3"]["center"]
+        floor_angles_vp3 = [self._angle_between(vp3_pt, pt) for pt in four_pts]
+        
+        draw_floor_rays("VP3")
+        draw_ceiling_rays("VP3", skip_angles=floor_angles_vp3)
 
     def draw_rays(self, layer, vps, bounds, mode_type):
         if not self.options.show_rays:
@@ -540,7 +623,8 @@ class PerspectiveGrid(inkex.EffectExtension):
     # ============================================================
     # UNIFIED PERSPECTIVE GRID — по алгоритму пользователя
     # ============================================================
-    def _build_perspective_grid(self, subgroup, vp1, vp2, bottom_pt, gx, gy, extend_edges, rect):
+    def _build_perspective_grid(self, subgroup, vp1, vp2, bottom_pt, gx, gy, extend_edges, rect,
+                                 cell_style="fill:none;stroke:#333333;stroke-width:0.5;"):
         """
         Within the lines of perspective:
             target_left = target_right = bottom_pt
@@ -614,7 +698,7 @@ class PerspectiveGrid(inkex.EffectExtension):
                 )
                 cell = inkex.PathElement(d=d)
                 cell.set("class", "grid-cell")
-                cell.set("style", "fill:none;stroke:#333333;stroke-width:0.5;")
+                cell.set("style", cell_style)
                 cell.set("id", f"{subgroup.get('id')}_cell_{i}_{j}")
                 subgroup.add(cell)
 
@@ -644,23 +728,102 @@ class PerspectiveGrid(inkex.EffectExtension):
     def _get_bounded_quads(self, vps, bounds, mode_type):
         vp1 = vps["VP1"]["center"]
         vp2 = vps["VP2"]["center"]
+        vp3 = vps["VP3"]["center"]
         y_hor = (vp1[1] + vp2[1]) / 2.0
-        rect = self._page_rect([vp1, vp2, vps["VP3"]["center"]])
+        rect = self._page_rect([vp1, vp2, vp3])
 
         floor_quad = None
         ceiling_quad = None
 
         if mode_type == "mode7_reverse":
             all_target_pts, u_pts, four_pts = bounds
-            floor_quad = self._orient_quad_for_grid(four_pts, vp1, vp2)
-            u_back = intersect_lines(vp2, u_pts[0], vp1, u_pts[2])
-            if not u_back:
-                u_back = (
-                    (u_pts[0][0] + u_pts[2][0]) - u_pts[1][0],
-                    (u_pts[0][1] + u_pts[2][1]) - u_pts[1][1],
-                )
-            ceil_pts = [u_pts[0], u_pts[1], u_pts[2], u_back]
-            ceiling_quad = self._orient_quad_for_grid(ceil_pts, vp1, vp2)
+
+            # 1. Ориентируем верхнюю грань (циклический порядок)
+            top_quad = self._orient_quad_for_grid(four_pts, vp1, vp2)
+
+            # 2. Мапинг 3 уникальных точек на 3 из 4 верхних углов
+            # Мы ищем, какая точка лежит ближе всего к лучу от VP3 до угла верхней грани
+            def dist_to_ray(p, origin, ray_point):
+                vx = ray_point[0] - origin[0]
+                vy = ray_point[1] - origin[1]
+                v_len2 = vx*vx + vy*vy
+                if v_len2 < EPSILON: return float('inf')
+                ux = p[0] - origin[0]
+                uy = p[1] - origin[1]
+                t = (ux * vx + uy * vy) / v_len2
+                if t <= 0: return float('inf') # точка не на луче
+                return abs(ux * vy - uy * vx) / math.sqrt(v_len2)
+
+            best_err = float('inf')
+            best_mapping = None
+            best_missing = None
+
+            # Перебираем, какой из 4 углов верхней грани пропущен, и все перестановки
+            for skip in range(4):
+                active_top_idx = [i for i in range(4) if i != skip]
+                for perm in itertools.permutations(range(3)):
+                    err = 0
+                    mapping = {}
+                    for k in range(3):
+                        ti = active_top_idx[k]
+                        bi = perm[k]
+                        d = dist_to_ray(u_pts[bi], vp3, top_quad[ti])
+                        if d == float('inf'):
+                            err = float('inf')
+                            break
+                        err += d
+                        mapping[ti] = bi
+                    if err < best_err:
+                        best_err = err
+                        best_mapping = mapping
+                        best_missing = skip
+
+            # 3. Вычисляем точки схода для рёбер верхней грани
+            # (свойства перспективы: (0,1) и (2,3) идут в одну VP, (1,2) и (3,0) в другую)
+            vpA = intersect_lines(top_quad[0], top_quad[1], top_quad[2], top_quad[3])
+            vpB = intersect_lines(top_quad[1], top_quad[2], top_quad[3], top_quad[0])
+            
+            edge_vp = {}
+            if vpA:
+                edge_vp[(0,1)] = edge_vp[(1,0)] = vpA
+                edge_vp[(2,3)] = edge_vp[(3,2)] = vpA
+            if vpB:
+                edge_vp[(1,2)] = edge_vp[(2,1)] = vpB
+                edge_vp[(3,0)] = edge_vp[(0,3)] = vpB
+
+            # 4. Заполняем нижнюю грань известными точками
+            btm = [None] * 4
+            for ti, bi in best_mapping.items():
+                btm[ti] = u_pts[bi]
+
+            # 5. Вычисляем недостающий 4-й угол
+            m = best_missing
+            n1 = (m + 1) % 4
+            n2 = (m - 1) % 4
+
+            vp1_edge = edge_vp.get((m, n1))
+            vp2_edge = edge_vp.get((m, n2))
+
+            B_miss = None
+            # Пересечение линий от соседних нижних точек к соответствующим VP
+            if vp1_edge and vp2_edge and btm[n1] and btm[n2]:
+                B_miss = intersect_lines(btm[n1], vp1_edge, btm[n2], vp2_edge)
+
+            # 6. Fallback на случай, если лучи параллельны (через масштаб от VP3)
+            if B_miss is None:
+                scales = []
+                for ti, bi in best_mapping.items():
+                    dt = math.hypot(top_quad[ti][0] - vp3[0], top_quad[ti][1] - vp3[1])
+                    db = math.hypot(u_pts[bi][0] - vp3[0], u_pts[bi][1] - vp3[1])
+                    if dt > EPSILON: scales.append(db/dt)
+                avg_scale = sum(scales)/len(scales) if scales else 0.5
+                T_miss = top_quad[m]
+                B_miss = (vp3[0] + avg_scale*(T_miss[0]-vp3[0]), vp3[1] + avg_scale*(T_miss[1]-vp3[1]))
+
+            btm[m] = B_miss
+
+            floor_quad = btm
+            ceiling_quad = top_quad
 
         elif mode_type in ("mode5", "mode7_legacy"):
             bp1, bp2, bp3, bp4 = bounds
@@ -670,20 +833,9 @@ class PerspectiveGrid(inkex.EffectExtension):
                 return {}
             base_sector = [bp1, p14, bp2, p23]
             floor_quad = self._orient_quad_for_grid(base_sector, vp1, vp2)
+            ceiling_quad = [(p[0], 2.0 * y_hor - p[1]) for p in floor_quad]
 
-            if bp3 is not None and bp4 is not None and (bp3[1] < y_hor or bp4[1] < y_hor):
-                c14 = intersect_lines(vp1, bp3, vp2, bp4)
-                c23 = intersect_lines(vp1, bp4, vp2, bp3)
-                if c14 and c23:
-                    ceiling_quad = self._orient_quad_for_grid([bp3, c14, bp4, c23], vp1, vp2)
-                else:
-                    sym = [(p[0], 2.0 * y_hor - p[1]) for p in base_sector]
-                    ceiling_quad = self._orient_quad_for_grid(sym, vp1, vp2)
-            else:
-                sym = [(p[0], 2.0 * y_hor - p[1]) for p in base_sector]
-                ceiling_quad = self._orient_quad_for_grid(sym, vp1, vp2)
-
-        else:
+        else:  # mode3
             dx = vp2[0] - vp1[0]
             x1 = vp1[0] + 0.35 * dx
             x2 = vp1[0] + 0.65 * dx
@@ -696,14 +848,7 @@ class PerspectiveGrid(inkex.EffectExtension):
             if not p14 or not p23:
                 return {}
             floor_quad = self._orient_quad_for_grid([b1, p14, b2, p23], vp1, vp2)
-
-            yc = y_hor - delta_y
-            b1, b2 = (x1, yc), (x2, yc)
-            p14 = intersect_lines(vp1, b1, vp2, b2)
-            p23 = intersect_lines(vp1, b2, vp2, b1)
-            if not p14 or not p23:
-                return {}
-            ceiling_quad = self._orient_quad_for_grid([b1, p14, b2, p23], vp1, vp2)
+            ceiling_quad = [(p[0], 2.0 * y_hor - p[1]) for p in floor_quad]
 
         quads = {}
         if floor_quad is not None:
@@ -714,14 +859,41 @@ class PerspectiveGrid(inkex.EffectExtension):
         if floor_quad is not None and ceiling_quad is not None:
             NL_f, NR_f, FR_f, FL_f = floor_quad
             NL_c, NR_c, FR_c, FL_c = ceiling_quad
-            quads["left_wall"] = [NL_f, FL_f, FL_c, NL_c]
-            quads["right_wall"] = [NR_f, FR_f, FR_c, NR_c]
-            quads["front_wall"] = [NL_f, NR_f, NR_c, NL_c]
-            quads["back_wall"] = [FL_f, FR_f, FR_c, FL_c]
+
+            # Вычисляем середины ребер пола
+            edges = [
+                ((NL_f[0]+NR_f[0])/2, (NL_f[1]+NR_f[1])/2), # 0: ребро 0-1
+                ((NR_f[0]+FR_f[0])/2, (NR_f[1]+FR_f[1])/2), # 1: ребро 1-2
+                ((FR_f[0]+FL_f[0])/2, (FR_f[1]+FL_f[1])/2), # 2: ребро 2-3
+                ((FL_f[0]+NL_f[0])/2, (FL_f[1]+NL_f[1])/2)  # 3: ребро 3-0
+            ]
+
+            # Определяем, где перед, зад, лево и право по координатам экрана
+            front_idx = max(range(4), key=lambda i: edges[i][1])  # самое нижнее
+            back_idx = min(range(4), key=lambda i: edges[i][1])   # самое верхнее
+            
+            remaining = [i for i in range(4) if i != front_idx and i != back_idx]
+            left_idx = min(remaining, key=lambda i: edges[i][0])  # самое левое
+            right_idx = max(remaining, key=lambda i: edges[i][0]) # самое правое
+
+            # Вспомогательная функция для склейки стены по индексу ребра
+            def make_wall(idx):
+                next_idx = (idx + 1) % 4
+                return [
+                    floor_quad[idx], floor_quad[next_idx], 
+                    ceiling_quad[next_idx], ceiling_quad[idx]
+                ]
+
+            # Назначаем стены на основе реального положения на экране
+            quads["front_wall"] = make_wall(front_idx)
+            quads["back_wall"] = make_wall(back_idx)
+            quads["left_wall"] = make_wall(left_idx)
+            quads["right_wall"] = make_wall(right_idx)
 
         return quads
-
-    def _build_quad_grid(self, subgroup, H, prefix, gx, gy):
+        
+    def _build_quad_grid(self, subgroup, H, prefix, gx, gy,
+                          cell_style="fill:none;stroke:#333333;stroke-width:0.5;"):
         for i in range(gx):
             for j in range(gy):
                 u0, u1 = i / gx, (i + 1) / gx
@@ -740,7 +912,7 @@ class PerspectiveGrid(inkex.EffectExtension):
                 )
                 cell = inkex.PathElement(d=d)
                 cell.set("class", "grid-cell")
-                cell.set("style", "fill:none;stroke:#333333;stroke-width:0.5;")
+                cell.set("style", cell_style)
                 cell.set("id", f"{prefix}_cell_{i}_{j}")
                 subgroup.add(cell)
 
@@ -765,26 +937,47 @@ class PerspectiveGrid(inkex.EffectExtension):
     def _generate_grid(self, vps, bounds, mode_type):
         gx = int(self.options.grid_x)
         gy = int(self.options.grid_y)
+        bx = int(self.options.box_x)
+        by = int(self.options.box_y)
+
         if gx < 1 or gy < 1:
-            raise inkex.AbortExtension("Grid segments must be at least 1.")
+            raise inkex.AbortExtension("Ray grid segments must be at least 1.")
+        if bx < 1 or by < 1:
+            raise inkex.AbortExtension("Box grid segments must be at least 1.")
 
         rect = self._page_rect()
-        g_grid = inkex.Group(id="Perspective_Grid")
+        g_grid = inkex.Group(id="Perspective_Grid")   # ray-based grids
+        g_box = inkex.Group(id="Perspective_Box")     # bounded surfaces
 
         vp1 = vps["VP1"]["center"]
         vp2 = vps["VP2"]["center"]
-        bottom_pt = self._get_bottom_anchor(vps, bounds, mode_type, rect)
 
-        # 1. Within the lines of perspective
+        quads = self._get_bounded_quads(vps, bounds, mode_type)
+
+        # Anchor point for the "Within" fan
+        if mode_type == "mode7_reverse" and "floor" in quads:
+            fq = quads["floor"]
+            sorted_fq = sorted(fq, key=lambda p: p[1], reverse=True)
+            front_a, front_b = sorted_fq[0], sorted_fq[1]
+            bottom_pt = (
+                (front_a[0] + front_b[0]) / 2.0,
+                (front_a[1] + front_b[1]) / 2.0,
+            )
+        else:
+            bottom_pt = self._get_bottom_anchor(vps, bounds, mode_type, rect)
+
+        # 1. Within the lines of perspective  → grid
         if self.options.show_within_perspective:
             subgroup = inkex.Group(id="Grid_WithinPerspective")
             g_grid.add(subgroup)
+            within_style = "fill:none;stroke:#666666;stroke-width:0.25;stroke-opacity:0.5;"
             self._build_perspective_grid(
                 subgroup, vp1, vp2, bottom_pt, gx, gy,
-                extend_edges=False, rect=rect
+                extend_edges=False, rect=rect,
+                cell_style=within_style
             )
 
-        # 2. To the edge of the page
+        # 2. To the edge of the page  → grid
         if self.options.show_to_page_edge:
             subgroup = inkex.Group(id="Grid_ToTheEdgeOfPage")
             g_grid.add(subgroup)
@@ -793,54 +986,113 @@ class PerspectiveGrid(inkex.EffectExtension):
                 extend_edges=True, rect=rect
             )
 
-        # 3. Bounded surfaces (homography)
-        quads = self._get_bounded_quads(vps, bounds, mode_type)
-        surface_map = {
-            "show_floor": ("floor", "Grid_Floor"),
-            "show_ceiling": ("ceiling", "Grid_Ceiling"),
-            "show_left_wall": ("left_wall", "Grid_LeftWall"),
-            "show_right_wall": ("right_wall", "Grid_RightWall"),
-            "show_front_wall": ("front_wall", "Grid_FrontWall"),
-            "show_back_wall": ("back_wall", "Grid_BackWall"),
-        }
-        for opt_name, (surf_key, group_id) in surface_map.items():
+        # 3. Bounded surfaces  → box
+        # Порядок от самого нижнего слоя к самому верхнему (потом добавляется позже — значит рисуется сверху).
+        # floor — дно, ceiling — верх; среди стен сначала задняя, потом боковые, затем передняя.
+        surface_order = [
+            ("floor",      "show_floor",      "Grid_Floor"),
+            ("back_wall",  "show_back_wall",  "Grid_BackWall"),
+            ("left_wall",  "show_left_wall",  "Grid_LeftWall"),
+            ("right_wall", "show_right_wall", "Grid_RightWall"),
+            ("front_wall", "show_front_wall", "Grid_FrontWall"),
+            ("ceiling",    "show_ceiling",    "Grid_Ceiling"),
+        ]
+
+        box_style = "fill:none;stroke:#666666;stroke-width:0.5;stroke-opacity:0.5;"
+
+        for surf_key, opt_name, group_id in surface_order:
             if getattr(self.options, opt_name, False) and surf_key in quads:
                 quad = quads[surf_key]
                 H = get_homography_matrix(quad)
                 if H is not None:
                     subgroup = inkex.Group(id=group_id)
-                    g_grid.add(subgroup)
-                    self._build_quad_grid(subgroup, H, group_id, gx, gy)
+                    g_box.add(subgroup)
+                    self._build_quad_grid(subgroup, H, group_id, bx, by, cell_style=box_style)
 
-        return g_grid if len(g_grid) > 0 else None
+        result = []
+        if len(g_grid) > 0:
+            result.append(g_grid)
+        if len(g_box) > 0:
+            result.append(g_box)
+        return result
 
     def effect(self):
         vps, bounds, mode_type = self.analyze_selection()
         layer = self.svg.get_current_layer()
 
-        old_rays = self.svg.getElementById("Perspective_Rays")
-        if self.options.show_rays:
-            temporary_rays_layer = inkex.Group()
-            self.draw_rays(temporary_rays_layer, vps, bounds, mode_type)
-            new_rays_group = temporary_rays_layer[0] if len(temporary_rays_layer) else None
-            if new_rays_group is not None:
-                layer.add(new_rays_group)
-            if old_rays is not None and old_rays is not new_rays_group and old_rays.getparent() is not None:
-                old_rays.getparent().remove(old_rays)
-        else:
-            if old_rays is not None and old_rays.getparent() is not None:
-                old_rays.getparent().remove(old_rays)
+        active_bbox = self._get_active_page_bbox()
+        active_key = None
+        if active_bbox is not None:
+            active_key = f"{active_bbox.left:.3f},{active_bbox.top:.3f},{active_bbox.right:.3f},{active_bbox.bottom:.3f}"
 
-        old_grid = self.svg.getElementById("Perspective_Grid")
+        def is_for_active_page(group):
+            """Группа принадлежит активной странице?"""
+            if group is None:
+                return False
+            if active_key is None:
+                # Не смогли определить активную страницу — legacy behavior
+                return True
+            stored = group.get("data-page-bbox")
+            if stored is not None:
+                return stored == active_key
+            # Legacy group — проверяем по центру bounding box (устойчивее, чем пересечение)
+            try:
+                bb = group.bounding_box()
+                if bb is None:
+                    return True
+                cx = (bb.left + bb.right) / 2.0
+                cy = (bb.top + bb.bottom) / 2.0
+                return (active_bbox.left <= cx <= active_bbox.right and
+                        active_bbox.top <= cy <= active_bbox.bottom)
+            except Exception:
+                return True
+
+        def prepare_group(base_id):
+            """Удаляет группы активной страницы, переименовывает группы чужих страниц,
+            чтобы освободить base_id для новой группы."""
+            matching = []
+            for el in self.svg.iter():
+                el_id = el.get("id", "")
+                if el_id == base_id or el_id.startswith(base_id + "_saved_"):
+                    matching.append(el)
+
+            # Удаляем группы, принадлежащие активной странице — они будут пересозданы
+            for el in matching:
+                if el.getparent() is None:
+                    continue
+                if is_for_active_page(el):
+                    el.getparent().remove(el)
+
+            # Если base_id всё ещё занят (группой с другой страницы) —
+            # переименовываем её в _saved_N, чтобы освободить id
+            existing = self.svg.getElementById(base_id)
+            if existing is not None:
+                i = 1
+                while self.svg.getElementById(f"{base_id}_saved_{i}") is not None:
+                    i += 1
+                existing.set("id", f"{base_id}_saved_{i}")
+
+        prepare_group("Perspective_Rays")
+        prepare_group("Perspective_Grid")
+        prepare_group("Perspective_Box")
+
+        # --- Создание лучей ---
+        if self.options.show_rays:
+            temp = inkex.Group()
+            self.draw_rays(temp, vps, bounds, mode_type)
+            new_rays = temp[0] if len(temp) else None
+            if new_rays is not None:
+                if active_key is not None:
+                    new_rays.set("data-page-bbox", active_key)
+                layer.add(new_rays)
+
+        # --- Создание сеток и коробки ---
         if self.options.show_grid:
-            grid_group = self._generate_grid(vps, bounds, mode_type)
-            if grid_group is not None:
-                layer.add(grid_group)
-            if old_grid is not None and old_grid is not grid_group and old_grid.getparent() is not None:
-                old_grid.getparent().remove(old_grid)
-        else:
-            if old_grid is not None and old_grid.getparent() is not None:
-                old_grid.getparent().remove(old_grid)
+            groups = self._generate_grid(vps, bounds, mode_type)
+            for grp in groups:
+                if active_key is not None:
+                    grp.set("data-page-bbox", active_key)
+                layer.add(grp)
 
 
 if __name__ == "__main__":
